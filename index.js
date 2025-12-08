@@ -3,48 +3,71 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 const path = require('path');
-// const { encrypt } = require('node-qpdf'); // <-- Ya no se usa
-
-// 🆕 Módulo para ejecutar comandos de sistema directamente
 const { exec } = require('child_process'); 
+// ⚠️ NO NECESITAS INSTALAR O IMPORTAR node-fetch si usas Node.js v18+
+require('dotenv').config(); 
 
-// ============ CONFIGURACIÓN - EDITA ESTOS VALORES ============
+// ============ CONFIGURACIÓN (usando .env) ============
 
 const dbConfig = {
-    host: 'localhost',
-    port: 5432,
-    database: 'videojuegos_db',
-    user: 'postgres',
-    password: '12345'  // ⚠️ Cambiar por tu contraseña de PostgreSQL
+    host: process.env.DB_HOST,
+    port: parseInt(process.env.DB_PORT), // 🛠️ CORRECCIÓN: Puerto como número
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD 
 };
 
 const emailConfig = {
-    service: 'gmail',
+    service: process.env.EMAIL_SERVICE,
     auth: {
-        user: 'gilsantiagodepa@gmail.com',           // ⚠️ Tu correo
-        pass: 'tmkh elgi qzzq qpej'                  // ⚠️ Contraseña de aplicación
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS 
     }
 };
 
-const emailDestinatario = 'nikolasgarcia143@gmail.com';  // ⚠️ Destinatario
-
-const PDF_PASSWORD = 'Videojuego2024';  // 🔐 Contraseña del PDF
+const emailDestinatario = process.env.EMAIL_DESTINATARIO;
+const PDF_PASSWORD = process.env.PDF_PASSWORD;
 
 // ==============================================================
+
+// 📍 Obtener Ubicación Geográfica por IP (Usa el fetch nativo de Node.js)
+async function obtenerUbicacion() {
+    console.log('📍 Obteniendo ubicación IP...');
+    try {
+        // Usamos la API de ip-api.com
+        const response = await fetch('http://ip-api.com/json/');
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            console.log(`✅ Ubicación detectada: ${data.city}, ${data.country} (Lat: ${data.lat}, Lon: ${data.lon})`);
+            return data;
+        } else {
+            console.log('⚠️ No se pudo obtener la ubicación IP.');
+            return { city: 'Desconocida', country: 'Desconocido', lat: 0, lon: 0 };
+        }
+    } catch (error) {
+        console.error('Error al contactar la API de geolocalización:', error.message);
+        return { city: 'Error de Red', country: 'Error', lat: 0, lon: 0 };
+    }
+}
 
 async function main() {
     let rutaPdfTemp = null;
     let rutaPdfFinal = null; 
+    let ubicacion = null; 
     
     try {
         console.log('🎮 === SISTEMA DE GESTIÓN DE VIDEOJUEGOS ===\n');
 
-        console.log('📊 Conectando a PostgreSQL...');
+        // Obtener la ubicación al inicio
+        ubicacion = await obtenerUbicacion();
+        
+        console.log('\n📊 Conectando a PostgreSQL...');
         const videojuegos = await obtenerVideojuegos();
         console.log(`✅ Se obtuvieron ${videojuegos.length} videojuegos\n`);
 
         console.log('📄 Generando PDF...');
-        rutaPdfTemp = await generarPDF(videojuegos);
+        rutaPdfTemp = await generarPDF(videojuegos, ubicacion); 
         console.log(`✅ PDF temporal generado\n`);
         
         console.log('🔐 Encriptando con QPDF (AES-256)...');
@@ -56,25 +79,17 @@ async function main() {
         await enviarCorreo(rutaPdfFinal);
         console.log('✅ Correo enviado exitosamente!\n');
         
-        // Limpiar archivo temporal
+        // Limpiar archivos
         if (rutaPdfTemp && fs.existsSync(rutaPdfTemp)) {
             fs.unlinkSync(rutaPdfTemp);
             console.log('🗑️ Archivo temporal eliminado (sin proteger)\n');
         }
-        
-        // 🗑️ Limpiar el archivo PDF protegido local (Opcional, si solo lo quieres en el email)
         if (rutaPdfFinal && fs.existsSync(rutaPdfFinal)) {
             fs.unlinkSync(rutaPdfFinal);
             console.log('🗑️ Archivo final protegido eliminado (solo se envió por email)\n');
         }
 
         console.log('🎉 ¡PROCESO COMPLETADO!');
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log(`📁 Archivo: ${path.basename(rutaPdfFinal)}`);
-        console.log(`🔐 Contraseña: "${PDF_PASSWORD}"`);
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('✅ El PDF está protegido con AES-256');
-        console.log('✅ Pedirá contraseña en CUALQUIER lector');
         
     } catch (error) {
         console.error('\n❌ ERROR:', error.message);
@@ -83,7 +98,6 @@ async function main() {
             console.error('\n🔧 SOLUCIÓN:');
             console.error('   1. Verifica que QPDF esté instalado.');
             console.error('   2. **ASEGÚRATE de que la ruta de QPDF esté en el PATH** y Reinicia tu terminal/editor.');
-            console.error('   3. Ejecuta en tu terminal: qpdf --version');
         }
         
         // Limpiar archivos si falló
@@ -115,7 +129,7 @@ async function obtenerVideojuegos() {
 }
 
 // Generar PDF con PDFKit
-async function generarPDF(videojuegos) {
+async function generarPDF(videojuegos, ubicacion) {
     return new Promise((resolve, reject) => {
         const nombreArchivo = `TEMP_${Date.now()}.pdf`;
         const rutaPdf = path.join(__dirname, nombreArchivo);
@@ -129,10 +143,16 @@ async function generarPDF(videojuegos) {
            .text('CATÁLOGO DE VIDEOJUEGOS', { align: 'center' })
            .moveDown(0.5);
 
-        // FECHA
+        // FECHA y UBICACIÓN 
         doc.fontSize(10).font('Helvetica')
-           .text(`Generado: ${new Date().toLocaleString('es-ES')}`, { align: 'left' })
-           .moveDown(1.5);
+           .text(`Generado: ${new Date().toLocaleString('es-ES')}`, { align: 'left' });
+           
+        if (ubicacion && ubicacion.city) {
+            doc.text(`Ubicación de Servidor: ${ubicacion.city}, ${ubicacion.country}`);
+            doc.text(`Coordenadas (aprox.): Lat ${ubicacion.lat} / Lon ${ubicacion.lon}`);
+        }
+        doc.moveDown(1.5);
+
 
         // TABLA - ENCABEZADOS
         const tableTop = doc.y;
@@ -196,30 +216,25 @@ async function generarPDF(videojuegos) {
     });
 }
 
-// 🔐 ENCRIPTAR CON QPDF (100% CONFIABLE - Llama directamente al ejecutable)
+// 🔐 ENCRIPTAR CON QPDF (Con llamada directa a exec)
 async function encriptarConQPDF(rutaPdfOriginal) {
     const nombreFinal = `Videojuegos_PROTEGIDO_${new Date().toISOString().slice(0,10)}.pdf`;
     const rutaPdfFinal = path.join(__dirname, nombreFinal);
     
     console.log('   → Aplicando encriptación AES-256...');
 
-    // Los dos PDF_PASSWORD son la contraseña de usuario y la de propietario
     const comando = `qpdf "${rutaPdfOriginal}" --encrypt ${PDF_PASSWORD} ${PDF_PASSWORD} 256 --print=full --modify=none --extract=n --accessibility=y -- "${rutaPdfFinal}"`;
 
     return new Promise((resolve, reject) => {
         
-        // console.log('   → Comando ejecutado:', comando); // Línea de depuración opcional
-        
         exec(comando, (error, stdout, stderr) => {
             if (error) {
-                // Manejo de errores de QPDF
                 if (stderr.includes('not found') || stderr.includes('no se reconoce')) {
                      return reject(new Error('QPDF no está instalado o no está en el PATH.'));
                 }
                 return reject(new Error(`Fallo de QPDF: ${stderr}`));
             }
 
-            // Si QPDF tiene éxito, el archivo final debe existir
             if (!fs.existsSync(rutaPdfFinal)) {
                 return reject(new Error('PDF encriptado no se creó.'));
             }
